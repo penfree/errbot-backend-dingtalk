@@ -1,6 +1,8 @@
 #coding=utf-8
 
 from functools import partial
+from os import access
+import pathlib
 from sqlite3.dbapi2 import Error
 from flask import Flask, jsonify, request, abort
 from gevent import pywsgi
@@ -12,18 +14,16 @@ import requests
 from errbot.backends.base import Identifier, Message, ONLINE, Person
 from errbot.core import ErrBot
 import sqlite3
+import sys
 
 app = Flask(__name__)
 LOG = logging.getLogger(__name__)
 
 try:
-    import errbot_backend_webapp
+    import errbot_backend_dingtalk
 except ImportError:
     sys.path.append(str(pathlib.Path(__file__).parents[1]))
-finally:
-    from errbot_backend_webapp.config import (
-        DingtalkConfig
-    )
+
 
 class DingtalkPerson(Person):
 
@@ -101,6 +101,7 @@ class DingtalkMessage(Message):
 
     @property
     def robot(self):
+        print(self._extras)
         return self._extras.get('chatbotUserId')
 
     @property
@@ -128,10 +129,15 @@ class DingtalkBackend(ErrBot):
     
         # sqlite db to store data
         self._conn = None
+        self.bot_identifier  = DingtalkPerson('bot', 'bot', '2', '123', 'bot')
+
+    def getConf(self, key, default=None):
+        conf = getattr(self.bot_config, 'BOT_CONFIG', {})
+        return conf.get(key, default)
     
     def getCursor(self):
         if not self._conn:
-            self._conn = sqlite3.connect(self.bot_config.get('database', 'dingtalk.db'), isolation_level=None)
+            self._conn = sqlite3.connect(self.getConf('database', 'dingtalk.db'), isolation_level=None)
         return self._conn.cursor()
 
     def ensureTable(self):
@@ -189,7 +195,7 @@ class DingtalkBackend(ErrBot):
                                     messageBody.get('conversationId'), messageBody.get('senderNick'), messageBody.get('senderCorpId'),
                                     messageBody.get('conversationTitle'))
             to_person = DingtalkRobot(messageBody['chatbotUserId'], messageBody['conversationId'], messageBody['conversationTitle'])
-            return DingtalkMessage(messageBody['content'], from_person, to_person)
+            return DingtalkMessage(messageBody['text']['content'], from_person, to_person, extras={'chatbotUserId': messageBody.get('chatbotUserId'), 'atUsers': messageBody.get('atUsers')})
     
     def build_reply(self, msg: DingtalkMessage, text: str, private: bool=False, threaded: bool=False) -> DingtalkMessage:
         reply = self.build_message(text)
@@ -204,7 +210,7 @@ class DingtalkBackend(ErrBot):
     def serve_forever(self):
         self.connect_callback()
         self.webserver = WebServer(self)
-        self.webserver.run(self.bot_config)
+        self.webserver.run()
     
     def callback_message(self, msg: DingtalkMessage):
         super().callback_message(msg)
@@ -212,11 +218,15 @@ class DingtalkBackend(ErrBot):
     def send_message(self, partial_message: DingtalkMessage):
         super().send_message(partial_message)
         conversation_id = partial_message.to.conversation_id
-        robot_id = partial_message.robot
+        robot_id = partial_message.to.sender_id
+        print(conversation_id)
+        print(robot_id)
     
         access_token = self.getAccessToken(robot_id, conversation_id)
+        if not access_token:
+            raise ValueError('cannot get access token')
         dingtalk_url = 'https://oapi.dingtalk.com/robot/send?access_token=%s' % access_token
-        if partial_message.is_markdown:
+        if True:
             data = {
                 'msgtype': 'markdown',
                 'markdown': {
@@ -234,6 +244,17 @@ class DingtalkBackend(ErrBot):
             requests.post(dingtalk_url, json=data)
         except Error as e:
             logging.exception(e)
+    
+    def query_room(self, room):
+        return None
+        
+    def change_presence(self, status, message):
+        pass
+
+    @property
+    def mode(self):
+        return 'dingtalk'
+
 
 
 
@@ -247,14 +268,25 @@ class WebServer(object):
 
         self._app.route('/robot/cicd', methods=['POST'])(self.cicdRobot)
         server = pywsgi.WSGIServer(
-            (config.host, config.port),
+            (self._errbot.getConf('host', '0.0.0.0'),  self._errbot.getConf('port', 80)),
             self._app
         )
         server.serve_forever()
 
     def cicdRobot(self):
         req_body = json.loads(request.get_data())
+        print(req_body)
         msg = self._errbot.build_message(req_body)
+        conversation_id = msg.frm.conversation_id
+        robot_id = msg.robot
+        access_token = self._errbot.getAccessToken(robot_id, conversation_id)
+        if not access_token:
+            return jsonify({
+                "msgtype": "text",
+                "text": {
+                    "content": "Token is not defined"
+                }
+            })
         self._errbot.callback_message(msg)
         return jsonify({
             "msgtype": "empty"

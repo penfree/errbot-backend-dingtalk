@@ -1,0 +1,6 @@
+[Core]
+Name = Dingtalk
+Module = dingtalk
+
+[Documentation]
+Description = This is a backend implementation for dingtalk
