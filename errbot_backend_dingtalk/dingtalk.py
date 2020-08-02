@@ -129,40 +129,40 @@ class DingtalkBackend(ErrBot):
     
         # sqlite db to store data
         self._conn = None
-        self.bot_identifier  = DingtalkPerson('bot', 'bot', '2', '123', 'bot')
+        self.bot_identifier = DingtalkPerson('bot', 'bot', '2', '123', 'bot')
+        self.ensureTable()
 
     def getConf(self, key, default=None):
         conf = getattr(self.bot_config, 'BOT_CONFIG', {})
         return conf.get(key, default)
     
-    def getCursor(self):
-        if not self._conn:
-            self._conn = sqlite3.connect(self.getConf('database', 'dingtalk.db'), isolation_level=None)
-        return self._conn.cursor()
-
     def ensureTable(self):
         """
             ensure nessesary tables
         """
-        c = self.getCursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS robot_token(
-            ROBOT_ID CHAR(50) NOT NULL,
-            CONVERSATION_ID CHAR(50) NOT NULL,
-            ACCESS_TOKEN CHAR(100)
-        );''')
+        with sqlite3.connect(self.getConf('database', 'dingtalk.db'), isolation_level=None) as conn:
+            c = conn.cursor()
+            c.execute('''CREATE TABLE IF NOT EXISTS robot_token(
+                ROBOT_ID CHAR(50) NOT NULL,
+                CONVERSATION_ID CHAR(50) NOT NULL,
+                ACCESS_TOKEN CHAR(100)
+            );''')
+            conn.commit()
     
     def getAccessToken(self, robot_id, conversatin_id):
         """
             get access_token of dingtalk robot
         """
         try:
-            c = self.getCursor()
-            cursor = c.execute("select access_token from robot_token where robot_id='%s' and conversation_id='%s';" % (robot_id, conversatin_id))
-            row = cursor.fetchone()
-            if row:
-                return row[0]
-            else:
-                return None
+            with sqlite3.connect(self.getConf('database', 'dingtalk.db'), isolation_level=None) as conn:
+                c = conn.cursor()
+                cursor = c.execute("select access_token from robot_token where robot_id='%s' and conversation_id='%s';" % (robot_id, conversatin_id))
+                conn.commit()
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+                else:
+                    return None
         except Error as e:
             logging.exception(e)
             return None
@@ -172,20 +172,22 @@ class DingtalkBackend(ErrBot):
             set token of robot in conversation
         """
         try:
-            c = self.getCursor()
-            c.execute('''INSERT OR REPLACE INTO ROBOT_TOKEN (robot_id, conversation_id, access_token) 
-  VALUES (  '%s', 
-            '%s',
-            '%s'
-          );''' % (robot_id, conversation_id, access_token)
-            )
-            return True
+            with sqlite3.connect(self.getConf('database', 'dingtalk.db'), isolation_level=None) as conn:
+                c = conn.cursor()
+                c.execute('''INSERT OR REPLACE INTO robot_token (robot_id, conversation_id, access_token) 
+    VALUES (  '%s', 
+                '%s',
+                '%s'
+            );''' % (robot_id, conversation_id, access_token)
+                )
+                conn.commit()
+                return True
         except Error as e:
             logging.exception(e)
             return False
     
     def build_identifier(self, text_reprensentation: str) -> Identifier:
-        return DingtalkPerson(text_reprensentation)
+        return self.bot_identifier
 
     def build_message(self, messageBody) -> DingtalkMessage:
         if isinstance(messageBody, str):
@@ -221,6 +223,7 @@ class DingtalkBackend(ErrBot):
         robot_id = partial_message.to.sender_id
         print(conversation_id)
         print(robot_id)
+        print(partial_message.body)
     
         access_token = self.getAccessToken(robot_id, conversation_id)
         if not access_token:
@@ -230,7 +233,8 @@ class DingtalkBackend(ErrBot):
             data = {
                 'msgtype': 'markdown',
                 'markdown': {
-                    'text': partial_message.body
+                    "title": "title",
+                    'text': "%s %s" % (partial_message.body, self.getConf("keyword"))
                 }
             }
         else:
@@ -274,17 +278,26 @@ class WebServer(object):
         server.serve_forever()
 
     def cicdRobot(self):
+        import re
         req_body = json.loads(request.get_data())
         print(req_body)
         msg = self._errbot.build_message(req_body)
         conversation_id = msg.frm.conversation_id
         robot_id = msg.robot
         access_token = self._errbot.getAccessToken(robot_id, conversation_id)
+        print(msg.body)
         if not access_token:
+            token_pat = re.compile(r'(本群)?(机器人)?(T|t)oken(是|:)(.*)$')
+            m = token_pat.match(msg.body)
+            return_msg = "Token 未设置， 请说：   Token是xxxx"
+            if m:
+                if self._errbot.setAccessToken(robot_id, conversation_id, m.group(5).strip()):
+                    return_msg = "Token 设置成功，当前token为%s" % m.group(5).strip()
+            
             return jsonify({
                 "msgtype": "text",
                 "text": {
-                    "content": "Token is not defined"
+                    "content": return_msg
                 }
             })
         self._errbot.callback_message(msg)
