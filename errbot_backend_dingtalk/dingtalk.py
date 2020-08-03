@@ -129,7 +129,7 @@ class DingtalkBackend(ErrBot):
     
         # sqlite db to store data
         self._conn = None
-        self.bot_identifier  = DingtalkPerson('bot', 'bot', '2', '123', 'bot')
+        self.bot_identifier = DingtalkPerson('bot', 'bot', '2', '123', 'bot')
 
     def getConf(self, key, default=None):
         conf = getattr(self.bot_config, 'BOT_CONFIG', {})
@@ -185,7 +185,7 @@ class DingtalkBackend(ErrBot):
             return False
     
     def build_identifier(self, text_reprensentation: str) -> Identifier:
-        return DingtalkPerson(text_reprensentation)
+        return None
 
     def build_message(self, messageBody) -> DingtalkMessage:
         if isinstance(messageBody, str):
